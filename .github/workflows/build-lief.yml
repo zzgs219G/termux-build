@@ -38,11 +38,18 @@ on:
         description: 'NDK 版本'
         required: false
         default: '29.0.0'
-  push:
-    tags: ['v*']
+  # ⚠️ 刻意【不】监听 push.tags：
+  #   tag 的语义是"给某个已存在的产物打标记"，不是"重新做一遍"。
+  #   2026-11-14 首次打 v2 时踩过这点 —— 推 tag 触发了一轮完整构建，
+  #   而产物早就编好并真机验证过了，等于白跑一次（虽然 ccache 命中
+  #   只要 30 秒，但语义是错的）。
+  #   发布流程：workflow_dispatch 构建 → 下载 artifact →
+  #   在 Releases 页面挂到对应 tag。tag 本身不触发编译。
 
 permissions:
-  contents: write
+  # 只需要读：本 workflow 不创建 Release、不改仓库内容，
+  # 只在 Actions 里产出 artifact。发布是人工在 Releases 页面挂的。
+  contents: read
 
 env:
   PYTHON_VERSION: ${{ github.event.inputs.python_version || '3.14' }}

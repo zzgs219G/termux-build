@@ -71,7 +71,8 @@ PyPI 上的 lief sdist 是 **mock 包**（7.8 KB）。它的 `backend/setup.py:1
 git add . && git commit -m "..." && git push
 
 # 3. Actions 页面手动触发 "build lief for android arm64"
-#    或打 tag：git tag v1 && git push --tags
+#    ⚠️ 刻意不监听 push.tags —— tag 是给已有产物打标记，不重新编译。
+#       发布流程：手动构建 → 下载 artifact → Releases 页面挂到对应 tag。
 
 # 4. 下载 artifact（lief-py3.14-android-arm64.tar.gz），拉回手机
 cd ~/Download
@@ -92,6 +93,34 @@ mv lief ~/逆向工具/pymods/
 | `python_version` | `3.14` | 必须与 Termux 一致 |
 | `android_api` | `24` | 最低 API，Termux 是 24 |
 | `ndk_version` | `29.0.0` | |
+
+### 发布（tag 不触发构建）
+
+tag 的语义是"给已存在的产物打标记"，不是"重新编译一遍"。
+所以 workflow **刻意不监听 `push.tags`**。
+
+```bash
+# 1. 手动触发构建（Actions 页面 Run workflow）
+# 2. 下载 artifact: lief-py3.14-android-arm64.tar.gz
+# 3. 打 tag（此时不会触发任何构建）
+git tag -a v3 -m "lief 0.17.6 for Termux"
+git push origin v3
+# 4. Releases 页面 → Draft a new release → 选 v3 → 上传那个 tar.gz
+```
+
+或用 API 一次做完（构建产物已在手时）：
+
+```bash
+# 建 Release
+curl -X POST -H "Authorization: token $TOK" \
+  https://api.github.com/repos/<owner>/<repo>/releases \
+  -d '{"tag_name":"v3","name":"...","body":"..."}'
+# 上传产物（不触发构建）
+curl -X POST -H "Authorization: token $TOK" \
+  -H "Content-Type: application/gzip" \
+  --data-binary @lief-py3.14-android-arm64.tar.gz \
+  "https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=lief-py3.14-android-arm64.tar.gz"
+```
 
 ### artifact 里是什么
 
