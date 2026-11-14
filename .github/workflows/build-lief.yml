@@ -1,0 +1,246 @@
+name: build lief for android arm64
+
+# 目标：产出可在 Termux (aarch64 / Python 3.14) 里 import 的 lief 扩展模块
+#
+# 为什么需要 CI：
+#   lief 官方不发布 Android wheel，pip 会主动拒绝（backend/setup.py:144
+#   打 "LIEF does not provide precompiled wheels for 'android - aarch64'"）。
+#   本机交叉编译需要 cmake + ninja + 数 GB 内存，手机上不现实。
+#
+# 为什么不用 pip 的 sdist：
+#   PyPI 上的 lief sdist 是【mock 包】（7.8KB），只留 backend/ 用于平台检查，
+#   src/ 和 build-requirements.txt 都被剔除 → 无法从 sdist 构建。
+#   必须用 git 源码。
+#
+# 关键难点：nanobind 需要【目标平台】的 Python 开发文件
+#   find_package(Python COMPONENTS Development.Module) 会去找 Python.h 和
+#   pyconfig.h。runner 上装的是 x86_64 Linux 的 Python，那个 pyconfig.h
+#   描述的是 glibc/x86_64，直接拿来交叉编译会得到错误的类型宽度
+#   （SIZEOF_LONG 等），产物一 import 就崩。
+#   解法：用 Termux 的 aarch64 pyconfig.h —— 由 python-headers.tar.gz 传入。
+
+on:
+  workflow_dispatch:
+    inputs:
+      lief_ref:
+        description: 'LIEF 的 git ref（tag 或 commit）'
+        required: false
+        default: '0.17.6'
+      python_version:
+        description: '目标 Python 版本（须与 Termux 一致，决定 ABI tag）'
+        required: false
+        default: '3.14'
+      android_api:
+        description: 'ANDROID_PLATFORM（最低 API）'
+        required: false
+        default: '24'
+      ndk_version:
+        description: 'NDK 版本'
+        required: false
+        default: '29.0.0'
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: ${{ github.event.inputs.python_version || '3.14' }}
+  ANDROID_API: ${{ github.event.inputs.android_api || '24' }}
+  NDK_VERSION: ${{ github.event.inputs.ndk_version || '29.0.0' }}
+  LIEF_REF: ${{ github.event.inputs.lief_ref || '0.17.6' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout（本仓库，只取 workflow 与脚本）
+        uses: actions/checkout@v4
+
+      - name: 环境自检
+        run: |
+          set -euo pipefail
+          echo "== 磁盘（LIEF 编译需要数 GB）=="
+          df -h /
+          echo
+          echo "== CPU / 内存 =="
+          nproc
+          free -m
+          echo
+          echo "== 目标 =="
+          echo "  Python : $PYTHON_VERSION"
+          echo "  API    : android-$ANDROID_API"
+          echo "  NDK    : $NDK_VERSION"
+          echo "  LIEF   : $LIEF_REF"
+
+      - name: 安装构建工具
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # cmake 要 >= 3.24（lief 的 pyproject 要求），ubuntu-latest 自带够
+          # ninja 比 make 快得多，且 LIEF 官方 CI 就用它
+          sudo apt-get install -y -qq ninja-build cmake zip unzip curl file
+
+      - name: 安装 NDK
+        run: |
+          set -euo pipefail
+          # 不用 sdkmanager：它只认完整版本号，且体积更大
+          ZIP="android-ndk-r${NDK_VERSION}-linux.zip"
+          # NDK 29 的命名是 r29（不带小版本），29.0.0 → r29
+          ZIP="android-ndk-r${NDK_VERSION%%.*}-linux.zip"
+          URL="https://dl.google.com/android/repository/${ZIP}"
+          echo "下载 $URL"
+          curl -fsSL -o /tmp/ndk.zip "$URL"
+          ls -lh /tmp/ndk.zip
+          mkdir -p "$RUNNER_TEMP/ndk"
+          unzip -q /tmp/ndk.zip -d "$RUNNER_TEMP/ndk"
+          NDK_DIR=$(find "$RUNNER_TEMP/ndk" -maxdepth 1 -type d -name 'android-ndk-*' | head -1)
+          test -d "$NDK_DIR" || { echo "✗ NDK 解压失败"; ls "$RUNNER_TEMP/ndk"; exit 1; }
+          echo "ANDROID_NDK_HOME=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK_DIR=$NDK_DIR" >> "$GITHUB_ENV"
+          echo "NDK 就位: $NDK_DIR"
+          ls "$NDK_DIR/build/cmake/android.toolchain.cmake"
+
+      # ── 关键步骤：目标平台的 Python 开发文件 ────────────────────────
+      # 从 Termux 打包上传的 python-headers.tar.gz 解出。
+      # 里面必须有：
+      #   include/pythonX.Y/Python.h
+      #   include/pythonX.Y/pyconfig.h      ← aarch64 Android 版本，最关键
+      #   include/pythonX.Y/...             （其余头文件）
+      - name: 取出目标平台 Python 头文件
+        run: |
+          set -euo pipefail
+          # 来源：仓库内 lief/vendor/python-headers-<ver>.tar.gz
+          # 由 Termux 侧 lief/pack-python-headers.sh 生成后提交（408KB，无外部依赖）
+          ART="lief/vendor/python-headers-${PYTHON_VERSION}.tar.gz"
+          if [ ! -f "$ART" ]; then
+            echo "✗ 缺少 $ART"
+            echo
+            echo "这个文件必须来自 Termux（不是 runner 上的 Python）："
+            echo "  交叉编译需要【目标平台】的 pyconfig.h。runner 的 x86_64"
+            echo "  pyconfig.h 里 SIZEOF_LONG / HAVE_FORK 等是按 x86_64 生成的，"
+            echo "  用它编出的扩展模块结构体布局错误，真机 import 即崩。"
+            echo
+            echo "在 Termux 里生成："
+            echo "  ./lief/pack-python-headers.sh ${PYTHON_VERSION}"
+            echo "  cp lief/dist/python-headers-${PYTHON_VERSION}.tar.gz lief/vendor/"
+            echo "  git add lief/vendor/ && git commit -m 'chore: 更新 Python 头文件'"
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/pyinc"
+          tar xzf "$ART" -C "$RUNNER_TEMP/pyinc"
+          PYINC=$(find "$RUNNER_TEMP/pyinc" -maxdepth 2 -name pyconfig.h | head -1)
+          test -n "$PYINC" || { echo "✗ 包里找不到 pyconfig.h"; find "$RUNNER_TEMP/pyinc" -maxdepth 3 | head -20; exit 1; }
+          PYINC=$(dirname "$PYINC")
+
+          echo "Python include: $PYINC"
+          echo "== 校验这份头文件确实是 aarch64 Android 的 =="
+          grep -E "^#define (SIZEOF_LONG|SIZEOF_VOID_P) " "$PYINC/pyconfig.h" | sed 's/^/  /'
+          # 硬校验：两处都必须是 8（64 位）。若不成立说明包拿错了，
+          # 编出来的模块必然崩，不如现在就失败。
+          for k in SIZEOF_LONG SIZEOF_VOID_P; do
+            v=$(grep -E "^#define $k " "$PYINC/pyconfig.h" | awk '{print $3}')
+            [ "$v" = "8" ] || { echo "✗ $k=$v，不是 64 位目标头文件" >&2; exit 1; }
+          done
+          echo "  ✓ 64 位目标头文件校验通过"
+          echo "PYINC=$PYINC" >> "$GITHUB_ENV"
+
+      - name: 拉取 LIEF 源码
+        run: |
+          set -euo pipefail
+          # --recursive 必须：third-party/ 下是 submodule
+          git clone --depth=1 --branch "$LIEF_REF" \
+            --recurse-submodules --shallow-submodules \
+            https://github.com/lief-project/LIEF lief-src \
+            || {
+              # tag 可能不是分支，退一步用全量 + checkout
+              git clone --recurse-submodules https://github.com/lief-project/LIEF lief-src
+              git -C lief-src checkout "$LIEF_REF"
+              git -C lief-src submodule update --init --recursive --depth=1
+            }
+          # 确认不是 mock sdist：必须有 src/ 和 build-requirements.txt
+          test -d lief-src/src || { echo "✗ 缺 src/，这不是完整源码"; exit 1; }
+          test -f lief-src/api/python/build-requirements.txt \
+            || { echo "✗ 缺 build-requirements.txt，这是 mock sdist"; exit 1; }
+          echo "LIEF 源码就位: $(git -C lief-src rev-parse --short HEAD)"
+
+      # ── 第一步：只编 C++ 核心库（不开 Python 绑定）──────────────────
+      # 拆成两步的理由：C++ 核心是纯交叉编译，失败原因单一只需看一边；
+      # 而 Python 绑定同时牵涉 nanobind + 目标 Python 头，排查时混在
+      # 一起会分不清是 LIEF 编不过还是绑定配不上。
+      - name: 编译 LIEF C++ 核心（android arm64）
+        run: |
+          set -euo pipefail
+          cd lief-src
+          cmake -S . -B build-core -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM="android-${ANDROID_API}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLIEF_PYTHON_API=OFF \
+            -DLIEF_EXAMPLES=OFF \
+            -DLIEF_TESTS=OFF \
+            -DLIEF_DOC=OFF \
+            -DLIEF_LOGGING=OFF \
+            -DLIEF_USE_CCACHE=OFF
+          cmake --build build-core -j"$(nproc)"
+
+      - name: 记录核心库产物
+        run: |
+          set -euo pipefail
+          echo "== LIEF 核心库产物 =="
+          find lief-src/build-core -name "libLIEF*.a" -o -name "libLIEF*.so" | while read -r f; do
+            printf "  %-70s %s\n" "$f" "$(stat -c%s "$f") 字节"
+          done
+          # 至少要有静态库，否则下一步无从谈起
+          find lief-src/build-core -name "libLIEF*.a" | grep -q . \
+            || { echo "✗ 没产出 libLIEF*.a"; find lief-src/build-core -name "*.a" | head; exit 1; }
+
+      # ── 第二步：编 Python 绑定 ─────────────────────────────────────
+      - name: 编译 Python 绑定
+        run: |
+          set -euo pipefail
+          cd lief-src
+          # 交叉编译时 CMake 的 find_package(Python) 必须指向目标头文件，
+          # 且不能让它去找目标平台的 libpython（Android 没有独立的
+          # libpython.so，扩展模块只依赖符号在进程里已存在）。
+          cmake -S api/python -B build-py -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM="android-${ANDROID_API}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLIEF_PRECOMPILED=OFF \
+            -DPython_EXECUTABLE="$(command -v python3)" \
+            -DPython_INCLUDE_DIR="$PYINC" \
+            -DPython_ROOT_DIR=/nonexistent \
+            -DPython_FIND_STRATEGY=LOCATION \
+            -DPython_FIND_VIRTUALENV=NEVER \
+            -DLIEF_LOGGING=OFF \
+            -DLIEF_USE_CCACHE=OFF
+
+          cmake --build build-py -j"$(nproc)"
+
+      - name: 收集产物并改 wheel 标签
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find lief-src/build-py -name "lief*.so" -o -name "pyLIEF*.so" | while read -r f; do
+            echo "找到扩展模块: $f"
+            cp "$f" out/
+          done
+          ls -la out/
+          for f in out/*.so; do
+            echo "== $f =="
+            file "$f"
+            # 确认是 ARM aarch64 且能看出是 shared object
+          done
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lief-android-arm64-py${{ env.PYTHON_VERSION }}
+          path: out/
+          if-no-files-found: error

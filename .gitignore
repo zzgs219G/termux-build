@@ -1,14 +1,16 @@
-build/
-.gradle/
+# 各构建目标自己的生成物
+*/dist/
+
+# 构建残留
+build*/
+*.o
+*.a
+*.so
+
+# 编辑器
+.vscode/
 .idea/
-local.properties
-*.log
+*.swp
+
+# 系统
 .DS_Store
-__pycache__/
-*.pyc
-node_modules/
-dist/
-.env
-*.class
-*.apk
-*.ipa
