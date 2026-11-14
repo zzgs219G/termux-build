@@ -356,6 +356,34 @@ jobs:
             echo "    ✓ 有 libpython3.14.so 依赖"
           done
 
+          # ── 打包成可直接用的 Python 包 ──────────────────────────
+          # 只给 .so 不够用：真机 import 时还需要 lief/ 这个 Python 包，
+          # 里面的 __init__.py 负责 from . import _lief 再 re-export 符号。
+          # 缺了它只能 import _lief（私有模块名），拿不到 lief.ELF 等 API。
+          # 实测：只放 .so 时 `import lief` 会报
+          #     ImportError: dynamic module does not define module
+          #     export function (PyInit_lief)   ← 因为 init 名是 PyInit__lief
+          echo
+          echo "== 打包 lief 目录 =="
+          # 源码里的 lief/ 是纯 Python（无编译产物），直接拷
+          test -d lief-src/api/python/lief || { echo "✗ 缺 api/python/lief/" >&2; exit 1; }
+          cp -a lief-src/api/python/lief "$GITHUB_WORKSPACE/stage-lief"
+          # 把编好的扩展模块按 Python 的命名约定放进去：
+          #   模块 init 函数是 PyInit__lief → 文件名必须是 _lief.<abi>.so
+          SO=$(ls out/*lief*.so | head -1)
+          ABI="cpython-$(echo "$PYTHON_VERSION" | tr -d '.' )-aarch64-linux-android"
+          cp "$SO" "$GITHUB_WORKSPACE/stage-lief/_lief.${ABI}.so"
+          echo "  扩展模块 → stage-lief/_lief.${ABI}.so"
+          # 检查包结构完整
+          test -f "$GITHUB_WORKSPACE/stage-lief/__init__.py" || { echo "✗ 缺 __init__.py" >&2; exit 1; }
+          find "$GITHUB_WORKSPACE/stage-lief" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find "$GITHUB_WORKSPACE/stage-lief" -type f | wc -l | xargs echo "  包内文件数:"
+
+          # 打包成 tar.gz（保留目录结构，解压即用）
+          tar czf out/lief-py${PYTHON_VERSION}-android-arm64.tar.gz \
+              -C "$GITHUB_WORKSPACE" stage-lief --transform 's,^stage-lief,lief,'
+          ls -lh out/lief-py*.tar.gz
+
       - name: 上传 artifact
         uses: actions/upload-artifact@v4
         with:
