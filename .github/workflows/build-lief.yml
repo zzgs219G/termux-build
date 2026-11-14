@@ -291,19 +291,49 @@ jobs:
 
           cmake --build build-py -j"$(nproc)"
 
-      - name: 收集产物并改 wheel 标签
+      - name: 收集产物
         run: |
           set -euo pipefail
           mkdir -p out
-          find lief-src/build-py -name "lief*.so" -o -name "pyLIEF*.so" | while read -r f; do
-            echo "找到扩展模块: $f"
-            cp "$f" out/
+          # ⚠️ 产物名是 _lief.so（下划线开头），不是 lief.so 也不是
+          #    pyLIEF.so —— 实测 run 43597303624 第 12 步：
+          #        [912/912] Linking CXX shared module api/python/_lief.so
+          #    但 find 只匹配 lief*.so / pyLIEF*.so，两者都不匹配，
+          #    导致 out/ 为空、upload-artifact 报 if-no-files-found。
+          #    这里改成收集 build-py 下所有 .so，再用 file 确认架构。
+          echo "== build-py 下所有 .so =="
+          find lief-src/build-py -name "*.so" -type f | while read -r f; do
+            printf "  %-60s %s\n" "$f" "$(stat -c%s "$f") 字节"
           done
+
+          # 只取 Python 扩展模块（名字里带 lief / pyLIEF 的）
+          find lief-src/build-py -name "*lief*.so" -type f -exec cp {} out/ \;
+
+          echo
+          echo "== 收集结果 =="
           ls -la out/
+          [ -n "$(ls -A out/)" ] || {
+            echo "✗ out/ 是空的，没找到扩展模块" >&2
+            find lief-src/build-py -name "*.so" | head -20 >&2
+            exit 1
+          }
+
+          echo
+          echo "== 架构确认（必须是 AArch64）=="
           for f in out/*.so; do
-            echo "== $f =="
             file "$f"
-            # 确认是 ARM aarch64 且能看出是 shared object
+            file "$f" | grep -qi "aarch64\|ARM aarch64" \
+              || { echo "✗ $f 不是 AArch64 产物" >&2; exit 1; }
+          done
+
+          echo
+          echo "== 依赖检查（不应有 libpython / libLIEF）=="
+          for f in out/*.so; do
+            echo "--- $(basename "$f")"
+            # DT_NEEDED 里只应有 libc/libm/libc++/libdl/liblog 等系统库。
+            # 出现 libpython* 说明链接方式错了（Android 没有这个库，
+            # 真机会 ImportError）；出现 libLIEF 说明静态链接没生效。
+            readelf -d "$f" | grep -E "NEEDED" | sed 's/^/    /'
           done
 
       - name: 上传 artifact
