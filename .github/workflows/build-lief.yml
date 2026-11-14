@@ -167,39 +167,35 @@ jobs:
             || { echo "✗ 缺 build-requirements.txt，这是 mock sdist"; exit 1; }
           echo "LIEF 源码就位: $(git -C lief-src rev-parse --short HEAD)"
 
-      # ── 第一步：只编 C++ 核心库（不开 Python 绑定）──────────────────
-      # 拆成两步的理由：C++ 核心是纯交叉编译，失败原因单一只需看一边；
-      # 而 Python 绑定同时牵涉 nanobind + 目标 Python 头，排查时混在
-      # 一起会分不清是 LIEF 编不过还是绑定配不上。
-      - name: 编译 LIEF C++ 核心（android arm64）
+      # ── 只做一次编译：顶层配置 + 开 Python 绑定 ─────────────────────
+      # 为什么删掉了原来那个"先编 C++ 核心"的步骤（2026-11-14）：
+      #   它编 452 个目标、约 90 秒，但【完全浪费】——
+      #   下一步 build-py 从顶层配置时会把 LIEF 核心重新编一遍
+      #   （实测 849 个目标里绝大部分是核心源码），两者不共享
+      #   CMakeCache，无法复用。留着只是让每轮 CI 多等 1.5 分钟。
+      #   它的产物（libLIEF*.a）也不进最终产物，纯属诊断用。
+      #
+      #   当时拆两步的理由是"失败时分不清是 LIEF 编不过还是绑定配不上"。
+      #   但实际排查下来，报错信息本身就能区分（CMake Error 会指出
+      #   是哪一行、哪个 target），不需要多花一次完整编译来隔离。
+      - name: 安装 ccache 并做缓存
         run: |
           set -euo pipefail
-          cd lief-src
-          cmake -S . -B build-core -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM="android-${ANDROID_API}" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLIEF_PYTHON_API=OFF \
-            -DLIEF_EXAMPLES=OFF \
-            -DLIEF_TESTS=OFF \
-            -DLIEF_DOC=OFF \
-            -DLIEF_LOGGING=OFF \
-            -DLIEF_USE_CCACHE=OFF
-          cmake --build build-core -j"$(nproc)"
+          sudo apt-get install -y -qq ccache
+          ccache --version | head -1
+          echo "CCACHE_DIR=$RUNNER_TEMP/ccache" >> $GITHUB_ENV
 
-      - name: 记录核心库产物
-        run: |
-          set -euo pipefail
-          echo "== LIEF 核心库产物 =="
-          find lief-src/build-core -name "libLIEF*.a" -o -name "libLIEF*.so" | while read -r f; do
-            printf "  %-70s %s\n" "$f" "$(stat -c%s "$f") 字节"
-          done
-          # 至少要有静态库，否则下一步无从谈起
-          find lief-src/build-core -name "libLIEF*.a" | grep -q . \
-            || { echo "✗ 没产出 libLIEF*.a"; find lief-src/build-core -name "*.a" | head; exit 1; }
+      - name: 恢复 ccache（跨轮复用编译产物）
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ccache
+          # key 里带 LIEF_REF / API / Python 版本：任一变化都必须重新编译，
+          # 否则会拿到不匹配的 .o。restore-keys 不加前缀匹配 —— 宁可 miss
+          # 也不要错配（LIEF 的 .o 与版本强绑定）。
+          key: ccache-lief-${{ env.LIEF_REF }}-api${{ env.ANDROID_API }}-py${{ env.PYTHON_VERSION }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-lief-${{ env.LIEF_REF }}-api${{ env.ANDROID_API }}-py${{ env.PYTHON_VERSION }}-
 
-      # ── 第二步：编 Python 绑定 ─────────────────────────────────────
       - name: 预置 nanobind（避免 FetchContent 与 find_package 的路径歧义）
         run: |
           set -euo pipefail
@@ -280,7 +276,9 @@ jobs:
             -DLIEF_TESTS=OFF \
             -DLIEF_DOC=OFF \
             -DLIEF_LOGGING=OFF \
-            -DLIEF_USE_CCACHE=OFF \
+            -DLIEF_USE_CCACHE=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_PROJECT_INCLUDE="$GITHUB_WORKSPACE/lief/android-python-shim.cmake" \
             -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON \
             -DPython_DIR="$GITHUB_WORKSPACE/lief/python-config" \
