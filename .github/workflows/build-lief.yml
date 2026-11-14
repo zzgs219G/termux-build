@@ -221,6 +221,16 @@ jobs:
           #   给 Python_INCLUDE_DIR 指到 Termux 的 pyconfig.h 所在目录，
           #   同时禁掉所有让 CMake 去找 runner 上 x86_64 Python 的路子
           #   （Python_ROOT_DIR 指到不存在的位置 + LOCATION 策略）。
+          # ⚠️ 关于 CMAKE_FIND_PACKAGE_PREFER_CONFIG：
+          #   find_package(Python) 默认走 Module 模式（CMake 自带
+          #   FindPython.cmake），此时 Python_DIR 完全被忽略 —— 实测
+          #   不设这个开关时，它照样找到 runner/Termux 自带的 libpython，
+          #   我们的 PythonConfig.cmake 根本没被执行。
+          #   但它会影响【所有】find_package，LIEF 还要找 nlohmann_json /
+          #   frozen 等，全局打开可能打乱它们的查找顺序。
+          #   折中：只在配置这一步打开（构建产物已经生成，后续不受影响），
+          #   且 LIEF 的那些依赖都打包在 third-party/ 里由 FetchContent 提供，
+          #   不走 find_package 的默认路径。
           cmake -S . -B build-py -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
@@ -233,6 +243,8 @@ jobs:
             -DLIEF_LOGGING=OFF \
             -DLIEF_USE_CCACHE=OFF \
             -DCMAKE_PROJECT_INCLUDE="$GITHUB_WORKSPACE/lief/android-python-shim.cmake" \
+            -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON \
+            -DPython_DIR="$GITHUB_WORKSPACE/lief/python-config" \
             -DNB_PYINC="$PYINC" \
             -DNB_PYEXE="$(command -v python3)"
 
