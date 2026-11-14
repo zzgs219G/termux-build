@@ -266,6 +266,22 @@ jobs:
           #   这是官方开关（flags.cmake:122 的
           #   if(NOT ANDROID_ALLOW_UNDEFINED_SYMBOLS)），比手拼
           #   -Wl,--allow-shlib-undefined 干净且不会与 NDK 默认值打架。
+          #
+          # ⚠️⚠️ 但只"允许未定义"还不够（run 43598610608 成功产物实测）：
+          #   DT_NEEDED 里只有 libm/libdl/libc，没有 libpython3.14.so。
+          #   真机 import 时报：
+          #       ImportError: dlopen failed: cannot locate symbol
+          #       "_Py_FalseStruct" referenced by lief...so
+          #   根因：Termux 的 python3.14 是【动态链接 libpython3.14.so】的
+          #   （可执行文件本身只导出 6 个符号，2162 个符号都在 .so 里）。
+          #   Android 的 dlopen 不会把 libpython 的符号暴露给扩展模块，
+          #   所以模块必须自己声明依赖它。
+          #   解法：链接时把 Termux 的 libpython3.14.so 加进来，
+          #   让产物带 DT_NEEDED=libpython3.14.so。该 .so 随仓库
+          #   vendor 提供（lief/vendor/libpython3.14.so，5.7MB）。
+          LIBPY_DIR="$GITHUB_WORKSPACE/lief/vendor"
+          test -f "$LIBPY_DIR/libpython3.14.so" \
+            || { echo "✗ 缺 lief/vendor/libpython3.14.so" >&2; exit 1; }
           cmake -S . -B build-py -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
@@ -285,7 +301,9 @@ jobs:
             -Dnanobind_DIR="$NB_DIR" \
             -DNB_PYINC="$PYINC" \
             -DNB_PYEXE="$(command -v python3)" \
-            -DANDROID_ALLOW_UNDEFINED_SYMBOLS=ON
+            -DANDROID_ALLOW_UNDEFINED_SYMBOLS=ON \
+            -DCMAKE_SHARED_LINKER_FLAGS="-L$LIBPY_DIR -Wl,--no-as-needed -lpython3.14" \
+            -DCMAKE_MODULE_LINKER_FLAGS="-L$LIBPY_DIR -Wl,--no-as-needed -lpython3.14"
 
           cmake --build build-py -j"$(nproc)"
 
@@ -325,13 +343,17 @@ jobs:
           done
 
           echo
-          echo "== 依赖检查（不应有 libpython / libLIEF）=="
+          echo "== 依赖检查（必须有 libpython3.14.so）=="
           for f in out/*.so; do
             echo "--- $(basename "$f")"
-            # DT_NEEDED 里只应有 libc/libm/libc++/libdl/liblog 等系统库。
-            # 出现 libpython* 说明链接方式错了（Android 没有这个库，
-            # 真机会 ImportError）；出现 libLIEF 说明静态链接没生效。
             readelf -d "$f" | grep -E "NEEDED" | sed 's/^/    /'
+            # 硬校验：必须有 DT_NEEDED=libpython3.14.so。
+            # 没有的话真机 import 会报 cannot locate symbol "_Py_FalseStruct"
+            # （Termux 的 python3.14 是动态链 libpython 的，符号都在那里，
+            #  Android 的 dlopen 不会自动暴露给扩展模块）。
+            readelf -d "$f" | grep -q "libpython3.14.so" \
+              || { echo "✗ $f 缺 DT_NEEDED=libpython3.14.so，真机会 ImportError" >&2; exit 1; }
+            echo "    ✓ 有 libpython3.14.so 依赖"
           done
 
       - name: 上传 artifact
