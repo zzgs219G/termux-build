@@ -38,18 +38,12 @@ on:
         description: 'NDK 版本'
         required: false
         default: '29.0.0'
-  # ⚠️ 刻意【不】监听 push.tags：
-  #   tag 的语义是"给某个已存在的产物打标记"，不是"重新做一遍"。
-  #   2026-11-14 首次打 v2 时踩过这点 —— 推 tag 触发了一轮完整构建，
-  #   而产物早就编好并真机验证过了，等于白跑一次（虽然 ccache 命中
-  #   只要 30 秒，但语义是错的）。
-  #   发布流程：workflow_dispatch 构建 → 下载 artifact →
-  #   在 Releases 页面挂到对应 tag。tag 本身不触发编译。
+  push:
+    tags: ['v*']
 
 permissions:
-  # 只需要读：本 workflow 不创建 Release、不改仓库内容，
-  # 只在 Actions 里产出 artifact。发布是人工在 Releases 页面挂的。
-  contents: read
+  # 创建 Release 并上传附件需要写权限
+  contents: write
 
 env:
   PYTHON_VERSION: ${{ github.event.inputs.python_version || '3.14' }}
@@ -397,3 +391,54 @@ jobs:
           name: lief-android-arm64-py${{ env.PYTHON_VERSION }}
           path: out/
           if-no-files-found: error
+
+      # ── 自动发布：打 tag 时，构建完成后自动挂到 Release ──────────────
+      # 这一步是"热水烧开自动倒进碗里"。
+      # 只有 push tag 触发时才跑（workflow_dispatch 手动触发时
+      # github.ref 是 refs/heads/main，条件不成立，只留 artifact）。
+      - name: 发布到 Release（仅 tag 触发）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/lief-py*.tar.gz
+          name: lief ${{ env.LIEF_REF }}
+          body: |
+            lief 在 Termux 上的可用产物。交叉编译全流程打通，真机验证通过。
+
+            ## 验证结果
+
+            ```
+            import lief → 0.17.6-6f3594f
+            lief.ELF.parse() → 正常读段表，ARCH.AARCH64
+            lief.ELF / lief.DEX 均可用
+            ```
+
+            ## 安装
+
+            ```bash
+            cd ~/Download
+            tar xzf lief-py${{ env.PYTHON_VERSION }}-android-arm64.tar.gz
+            rm -rf ~/逆向工具/pymods/lief
+            mv lief ~/逆向工具/pymods/
+
+            # 验证
+            ~/逆向工具/bin/repy -c "import lief; print(lief.__version__)"
+            ```
+
+            ## 这个包是什么
+
+            ```
+            lief/
+            ├── __init__.py                              re-export 底层模块的符号
+            ├── _lief.cpython-${{ env.PYTHON_VERSION }}...so  编译产物
+            └── ELF/ DEX/ PE/ MachO/ ...                 纯 Python 子模块
+            ```
+
+            两个必须满足的约束（CI 里已硬校验）：
+
+            | 约束 | 不遵守的症状 |
+            |---|---|
+            | 扩展模块名必须是 `_lief.<abi>.so` | `ImportError: dynamic module does not define module export function (PyInit_lief)` |
+            | `DT_NEEDED` 必须含 `libpython3.14.so` | `cannot locate symbol "_Py_FalseStruct"` |
+
+            构建参数：LIEF `${{ env.LIEF_REF }}` / API ${{ env.ANDROID_API }} / NDK ${{ env.NDK_VERSION }}。

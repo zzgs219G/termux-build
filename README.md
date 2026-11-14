@@ -94,33 +94,20 @@ mv lief ~/逆向工具/pymods/
 | `android_api` | `24` | 最低 API，Termux 是 24 |
 | `ndk_version` | `29.0.0` | |
 
-### 发布（tag 不触发构建）
+### 发布
 
-tag 的语义是"给已存在的产物打标记"，不是"重新编译一遍"。
-所以 workflow **刻意不监听 `push.tags`**。
+打 tag 就是发版，构建完自动挂到 Release。
 
 ```bash
-# 1. 手动触发构建（Actions 页面 Run workflow）
-# 2. 下载 artifact: lief-py3.14-android-arm64.tar.gz
-# 3. 打 tag（此时不会触发任何构建）
-git tag -a v3 -m "lief 0.17.6 for Termux"
+git tag -a v3 -m "lief 0.17.6"
 git push origin v3
-# 4. Releases 页面 → Draft a new release → 选 v3 → 上传那个 tar.gz
 ```
 
-或用 API 一次做完（构建产物已在手时）：
+workflow 会自动：编译 → 打包 → 创建 Release → 上传附件。
+去 Releases 页面就能直接下载，不需要人工挂附件。
 
-```bash
-# 建 Release
-curl -X POST -H "Authorization: token $TOK" \
-  https://api.github.com/repos/<owner>/<repo>/releases \
-  -d '{"tag_name":"v3","name":"...","body":"..."}'
-# 上传产物（不触发构建）
-curl -X POST -H "Authorization: token $TOK" \
-  -H "Content-Type: application/gzip" \
-  --data-binary @lief-py3.14-android-arm64.tar.gz \
-  "https://uploads.github.com/repos/<owner>/<repo>/releases/<id>/assets?name=lief-py3.14-android-arm64.tar.gz"
-```
+不想发版、只想拿产物：Actions 页面 `Run workflow` 手动触发，
+产物在 run 页面的 artifact 里（不创建 Release）。
 
 ### artifact 里是什么
 
