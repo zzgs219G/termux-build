@@ -258,6 +258,18 @@ jobs:
           #   折中：只在配置这一步打开（构建产物已经生成，后续不受影响），
           #   且 LIEF 的那些依赖都打包在 third-party/ 里由 FetchContent 提供，
           #   不走 find_package 的默认路径。
+          # ⚠️ ANDROID_ALLOW_UNDEFINED_SYMBOLS=ON 是这一关的钥匙：
+          #   NDK 的 flags.cmake:123 默认加 -Wl,--no-undefined，但 Python
+          #   扩展模块天然带未定义符号 —— PyFrame_GetCode /
+          #   PyUnicode_AsUTF8AndSize 等等，这些符号由【运行时进程里的
+          #   python 可执行文件】提供，不来自任何 .so。所以不能要求
+          #   链接期全部解析。
+          #   实测(run 43596160717)不加时：
+          #       ld.lld: error: undefined symbol: PyFrame_GetCode
+          #       referenced by error.cpp.o in libnanobind-static.a
+          #   这是官方开关（flags.cmake:122 的
+          #   if(NOT ANDROID_ALLOW_UNDEFINED_SYMBOLS)），比手拼
+          #   -Wl,--allow-shlib-undefined 干净且不会与 NDK 默认值打架。
           cmake -S . -B build-py -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
@@ -274,7 +286,8 @@ jobs:
             -DPython_DIR="$GITHUB_WORKSPACE/lief/python-config" \
             -Dnanobind_DIR="$NB_DIR" \
             -DNB_PYINC="$PYINC" \
-            -DNB_PYEXE="$(command -v python3)"
+            -DNB_PYEXE="$(command -v python3)" \
+            -DANDROID_ALLOW_UNDEFINED_SYMBOLS=ON
 
           cmake --build build-py -j"$(nproc)"
 
