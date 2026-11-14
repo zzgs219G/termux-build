@@ -5,7 +5,13 @@
 build*/
 *.o
 *.a
+
+# ⚠️ 注意：不能无脑忽略 *.so —— lief/vendor/libpython3.14.so 是
+#    构建时【必须】的目标平台库（链接期要它产生 DT_NEEDED），
+#    会被误 ignore 掉导致 CI 报"缺 lief/vendor/libpython3.14.so"。
+#    这里改成只忽略构建目录下的 .so。
 *.so
+!lief/vendor/*.so
 
 # 编辑器
 .vscode/
