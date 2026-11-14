@@ -73,49 +73,74 @@ git add . && git commit -m "..." && git push
 # 3. Actions 页面手动触发 "build lief for android arm64"
 #    或打 tag：git tag v1 && git push --tags
 
-# 4. 下载 artifact，拉回手机
-mkdir -p ~/逆向工具/pymods/lief
-cp ~/Download/lief*.so ~/逆向工具/pymods/lief/
+# 4. 下载 artifact（lief-py3.14-android-arm64.tar.gz），拉回手机
+cd ~/Download
+tar xzf lief-py3.14-android-arm64.tar.gz   # 得到 lief/ 目录
+rm -rf ~/逆向工具/pymods/lief
+mv lief ~/逆向工具/pymods/
 
 # 5. 验证
 ~/逆向工具/bin/repy -c "import lief; print(lief.__version__)"
+# → 0.17.6-6f3594f
 ```
 
 参数（都可留空用默认）：
 
 | 输入 | 默认 | 说明 |
 |---|---|---|
-| `lief_ref` | `main` | LIEF 的 tag 或 commit。**建议先用 `0.17.6`** |
+| `lief_ref` | `0.17.6` | LIEF 的 tag 或 commit |
 | `python_version` | `3.14` | 必须与 Termux 一致 |
 | `android_api` | `24` | 最低 API，Termux 是 24 |
 | `ndk_version` | `29.0.0` | |
+
+### artifact 里是什么
+
+```
+lief-py3.14-android-arm64.tar.gz
+└── lief/
+    ├── __init__.py                              from . import _lief 后 re-export 符号
+    ├── _lief.cpython-314-aarch64-linux-android.so   编译产物（10 MB）
+    ├── ELF/ DEX/ PE/ MachO/ ...                 纯 Python 子模块
+    └── ...
+```
+
+两个容易踩的点（已在 CI 里硬校验）：
+
+1. **扩展模块名必须是 `_lief.<abi>.so`**（下划线开头）。
+   它的 init 函数是 `PyInit__lief`，改名成 `lief.*.so` 会报
+   `ImportError: dynamic module does not define module export function (PyInit_lief)`。
+2. **`DT_NEEDED` 必须含 `libpython3.14.so`**。
+   Termux 的 `python3.14` 是动态链接 libpython 的（可执行文件本身只导出
+   6 个符号，2162 个符号都在 `.so` 里）。Android 的 `dlopen` 不会把
+   libpython 的符号暴露给扩展模块，所以模块必须自己声明依赖它。
+   缺了会报 `cannot locate symbol "_Py_FalseStruct"`。
 
 ### Python 版本变了怎么办
 
 ```bash
 ./lief/pack-python-headers.sh          # 自动读当前 python3 版本
 cp lief/dist/python-headers-*.tar.gz lief/vendor/
+# 同时更新 vendor 里的 libpython（文件名带版本号）
+cp $PREFIX/lib/libpythonX.Y.so lief/vendor/
 git add lief/vendor/
 ```
 
-同时在 workflow 里把 `PYTHON_VERSION` 默认值改掉。
+同时在 workflow 里把 `PYTHON_VERSION` 默认值改掉，并把
+`-lpython3.14` 改成对应版本。
 
 ## 已知风险（如实）
 
-**这套脚本没在真机验证过。** 本机内存只剩 3.5 GB，编 lief 不现实，
-所以只能靠 CI。第一次跑很可能要改，最可能卡在三处：
+**已在真机验证通过**（2026-11-14）：
+`import lief` → `0.17.6-6f3594f`，`lief.ELF.parse()` 正常读段表。
 
-| 环节 | 可能失败 | 修法 |
-|---|---|---|
-| `find_package(Python)` | 仍去用 runner 的 x86_64 Python | 加 `-DPython_NO_SYSTEM_PACKAGES=ON` |
-| 链接 | 要 `libpython3.14.so`（Android 没有） | 传空 `-DPython_LIBRARY=` |
-| 产物导入 | 真机 ImportError | `readelf -d` 看 `DT_NEEDED`，不该有 libpython |
+仍然存在的限制：
 
-其他变量：
-
-- **lief 版本**：默认 `main`。建议先 `lief_ref = 0.17.6` 跑通再试新版。
-- **Python 3.14 太新**：lief 要求 `>= 3.10`，但 nanobind 对 3.14 的兼容性是变量。
-- **时间**：给了 180 分钟超时，2 核 runner 全量编译约 30–60 分钟。
+| 项 | 说明 |
+|---|---|
+| lief 版本 | 只在 `0.17.6` 上验证过。换版本可能遇到新的 API/CMake 变化 |
+| Python 版本 | 只在 3.14 上验证。换版本必须同时换 pyconfig.h 和 libpython |
+| 其他 ABI | 只构建 arm64-v8a。armeabi-v7a 需要改 `ANDROID_ABI` 和 libpython |
+| ccache | key 含 LIEF_REF/api/python 版本，任一变化必然全量重编（约 7 分钟）；同参数重跑约 30 秒 |
 
 ## 历史
 
