@@ -204,22 +204,44 @@ jobs:
         run: |
           set -euo pipefail
           cd lief-src
-          # 交叉编译时 CMake 的 find_package(Python) 必须指向目标头文件，
-          # 且不能让它去找目标平台的 libpython（Android 没有独立的
-          # libpython.so，扩展模块只依赖符号在进程里已存在）。
-          cmake -S api/python -B build-py -G Ninja \
+          # ⚠️ 必须从【顶层】配置，不能 -S api/python：
+          #   api/python/CMakeLists.txt:22 用的是
+          #       ${THIRD_PARTY_DIRECTORY}/nanobind-<ver>.zip
+          #   而这个变量只在顶层 CMakeLists.txt:76 定义：
+          #       set(THIRD_PARTY_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/third-party/")
+          #   从子目录配置时该变量为空 → 路径拼成
+          #       /nanobind-2.8.0.r19.g617d5a0.zip   （根目录下的文件）
+          #   实测报：File not found: /nanobind-2.8.0.r19.g617d5a0.zip
+          #   （run 43593304603 第 10 步）
+          #
+          #   nanobind 的 zip 在 third-party/ 里是【自带】的，
+          #   所以从顶层配置不会触发联网下载，也不需要 submodule。
+          #
+          # ⚠️ find_package(Python) 必须指向目标平台头文件：
+          #   给 Python_INCLUDE_DIR 指到 Termux 的 pyconfig.h 所在目录，
+          #   同时禁掉所有让 CMake 去找 runner 上 x86_64 Python 的路子
+          #   （Python_ROOT_DIR 指到不存在的位置 + LOCATION 策略）。
+          cmake -S . -B build-py -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$NDK_DIR/build/cmake/android.toolchain.cmake" \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DLIEF_PRECOMPILED=OFF \
+            -DLIEF_PYTHON_API=ON \
+            -DLIEF_EXAMPLES=OFF \
+            -DLIEF_TESTS=OFF \
+            -DLIEF_DOC=OFF \
+            -DLIEF_LOGGING=OFF \
+            -DLIEF_USE_CCACHE=OFF \
             -DPython_EXECUTABLE="$(command -v python3)" \
             -DPython_INCLUDE_DIR="$PYINC" \
             -DPython_ROOT_DIR=/nonexistent \
+            -DPython_NO_SYSTEM_PACKAGES=ON \
             -DPython_FIND_STRATEGY=LOCATION \
             -DPython_FIND_VIRTUALENV=NEVER \
-            -DLIEF_LOGGING=OFF \
-            -DLIEF_USE_CCACHE=OFF
+            -DPython3_EXECUTABLE="$(command -v python3)" \
+            -DPython3_INCLUDE_DIR="$PYINC" \
+            -DPython3_ROOT_DIR=/nonexistent \
+            -DPython3_FIND_STRATEGY=LOCATION
 
           cmake --build build-py -j"$(nproc)"
 
