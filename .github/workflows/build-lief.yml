@@ -232,16 +232,9 @@ jobs:
             -DLIEF_DOC=OFF \
             -DLIEF_LOGGING=OFF \
             -DLIEF_USE_CCACHE=OFF \
-            -DPython_EXECUTABLE="$(command -v python3)" \
-            -DPython_INCLUDE_DIR="$PYINC" \
-            -DPython_ROOT_DIR=/nonexistent \
-            -DPython_NO_SYSTEM_PACKAGES=ON \
-            -DPython_FIND_STRATEGY=LOCATION \
-            -DPython_FIND_VIRTUALENV=NEVER \
-            -DPython3_EXECUTABLE="$(command -v python3)" \
-            -DPython3_INCLUDE_DIR="$PYINC" \
-            -DPython3_ROOT_DIR=/nonexistent \
-            -DPython3_FIND_STRATEGY=LOCATION
+            -DCMAKE_PROJECT_INCLUDE="$GITHUB_WORKSPACE/lief/android-python-shim.cmake" \
+            -DNB_PYINC="$PYINC" \
+            -DNB_PYEXE="$(command -v python3)"
 
           cmake --build build-py -j"$(nproc)"
 
