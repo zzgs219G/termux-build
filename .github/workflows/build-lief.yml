@@ -200,6 +200,33 @@ jobs:
             || { echo "✗ 没产出 libLIEF*.a"; find lief-src/build-core -name "*.a" | head; exit 1; }
 
       # ── 第二步：编 Python 绑定 ─────────────────────────────────────
+      - name: 预置 nanobind（避免 FetchContent 与 find_package 的路径歧义）
+        run: |
+          set -euo pipefail
+          # 为什么要手工解压：
+          #   api/python/CMakeLists.txt:30-36 先 FetchContent_Declare(nanobind
+          #   URL ${THIRD_PARTY_DIRECTORY}/nanobind-<ver>.zip) 再
+          #   FetchContent_MakeAvailable，随后调用
+          #       find_package(nanobind REQUIRED PATHS ${nanobind_SOURCE_DIR}/cmake
+          #                    NO_DEFAULT_PATH)
+          #   在 CMake 4.4 + CMAKE_FIND_PACKAGE_PREFER_CONFIG=ON 下实测
+          #   （run 43595571998）：FetchContent 没有产出 nanobind_SOURCE_DIR，
+          #   于是 PATHS 为空 → 报
+          #       Could not find a package configuration file provided by "nanobind"
+          #
+          #   不去猜 FetchContent 的变量作用域行为（不同 CMake 版本有差异），
+          #   直接把 zip 解开放到确定位置，用 -Dnanobind_DIR 显式指定。
+          #   zip 就在 LIEF 源码的 third-party/ 里，不联网。
+          NB_ZIP=$(ls lief-src/third-party/nanobind-*.zip | head -1)
+          echo "nanobind 包: $NB_ZIP"
+          mkdir -p "$GITHUB_WORKSPACE/nanobind-src"
+          unzip -q "$NB_ZIP" -d "$GITHUB_WORKSPACE/nanobind-src"
+          NB_CMAKEDIR="$GITHUB_WORKSPACE/nanobind-src/cmake"
+          test -f "$NB_CMAKEDIR/nanobind-config.cmake" \
+            || { echo "✗ 解压后找不到 nanobind-config.cmake"; find "$GITHUB_WORKSPACE/nanobind-src" -name "*.cmake" | head; exit 1; }
+          echo "NB_DIR=$NB_CMAKEDIR" >> "$GITHUB_ENV"
+          echo "nanobind 就位: $NB_CMAKEDIR"
+
       - name: 编译 Python 绑定
         run: |
           set -euo pipefail
@@ -245,6 +272,7 @@ jobs:
             -DCMAKE_PROJECT_INCLUDE="$GITHUB_WORKSPACE/lief/android-python-shim.cmake" \
             -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON \
             -DPython_DIR="$GITHUB_WORKSPACE/lief/python-config" \
+            -Dnanobind_DIR="$NB_DIR" \
             -DNB_PYINC="$PYINC" \
             -DNB_PYEXE="$(command -v python3)"
 
