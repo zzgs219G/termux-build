@@ -58,6 +58,16 @@ list(GET _nb_vl 1 _nb_minor)
 set(Python_VERSION_MAJOR "${_nb_major}")
 set(Python_VERSION_MINOR "${_nb_minor}")
 
+# ⚠️ nanobind-config.cmake:53 会直接执行
+#       "${Python_EXECUTABLE}" -c "import sysconfig; print(...EXT_SUFFIX)"
+#   来取扩展名后缀。若不设这个变量，它会执行空命令 → 失败报：
+#       nanobind: Python sysconfig query to find 'EXT_SUFFIX' property failed!
+#   （实测 run 43594391273）
+#   这里必须指向【可执行的】host python —— 只是查后缀字符串，
+#   不参与编译，所以用 runner 的 python3 是正确的。
+set(Python_EXECUTABLE "${NB_PYEXE}")
+set(Python3_EXECUTABLE "${NB_PYEXE}")
+
 # ── Interpreter target ──
 if (NOT TARGET Python::Interpreter)
   add_executable(Python::Interpreter IMPORTED)
@@ -83,6 +93,9 @@ endif()
 # nanobind 的 nanobind-config.cmake 会读这些变量决定 ABI tag 和编译宏
 set(Python_INCLUDE_DIRS "${NB_PYINC}")
 set(Python_SOABI        "cpython-${_nb_major}${_nb_minor}-aarch64-linux-android")
+# SOSABI 是 stable-ABI（abi3）用的，这里不启用 stable ABI，
+# 所以显式设为空，让 nanobind 走普通分支。
+set(Python_SOSABI       "")
 set(Python_STDLIB       "")
 
 message(STATUS "nanobind shim: Python::Module -> 头文件 ${NB_PYINC}")
